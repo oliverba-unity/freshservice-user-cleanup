@@ -3,5 +3,5 @@ __pycache__/
 .env
 .DS_Store
 .idea/
-*.txt
+requester_ids.txt
 *.csv
