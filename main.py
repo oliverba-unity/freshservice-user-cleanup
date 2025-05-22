@@ -441,12 +441,74 @@ def add_secondary_emails(file_path: Path) -> None:
     except Exception as e:
         print(f"An unexpected error occurred. Details: {e}")
 
+def update_requester_external_id(file_path: Path) -> None:
+    """
+    Reads a CSV file containing requester IDs and external IDs, and updates the external_id
+    for each requester using an HTTP PUT request.
+
+    Args:
+        file_path (Path): Path to the CSV file containing requester IDs and external IDs.
+    """
+    print(f"Reading data from CSV file: {file_path}")
+
+    try:
+        # Open the CSV file and read its rows
+        with file_path.open() as csvfile:
+            csv_reader = csv.reader(csvfile)
+            header = next(csv_reader)  # Read the header row
+
+            # Ensure the CSV file has required columns: requester_id, external_id
+            if header != ["requester_id", "external_id"]:
+                print(f"Invalid CSV format. Expected columns: requester_id, external_id.")
+                return
+
+            for row in csv_reader:
+                if len(row) < 2:
+                    print(f"Invalid row format: {row}. Skipping...")
+                    continue  # Skip rows with insufficient columns
+
+                try:
+                    requester_id = int(row[0])  # Parse requester ID as an integer
+                    external_id = row[1].strip()  # Get the external_id as a string
+
+                    # Make the PUT request to update the external_id
+                    print(f"Updating external_id for requester {requester_id}...")
+                    update_body = {
+                        "external_id": external_id
+                    }
+
+                    response = make_request_with_rate_limit(
+                        "PUT",
+                        f"{API_URL}/requesters/{requester_id}",
+                        json=update_body,
+                        headers={"Content-Type": "application/json"},
+                        auth=auth
+                    )
+
+                    if response.status_code == 200:
+                        print(f"Successfully updated external_id for requester {requester_id} to '{external_id}'.")
+                    elif response.status_code == 404:
+                        print(f"Requester {requester_id} not found. Skipping...")
+                    else:
+                        print(
+                            f"Failed to update external_id for requester {requester_id}. HTTP Status: {response.status_code}, Response: {response.text}")
+
+                except ValueError as e:
+                    print(f"Invalid requester ID format in row: {row}. Skipping... Details: {e}")
+                except Exception as e:
+                    print(f"An unexpected error occurred while processing row: {row}. Details: {e}")
+
+    except FileNotFoundError:
+        print(f"Error: File {file_path} not found.")
+    except Exception as e:
+        print(f"An unexpected error occurred. Details: {e}")
+
 if __name__ == "__main__":
     # Ask the user which action they want to perform.
-    action = input("Enter action ('deactivate', 'reactivate', 'merge', 'update_requester_emails', or 'add_secondary_emails'): ").strip().lower()
+    action = input("Enter action ('deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', or 'update_external_id'): ").strip().lower()
 
-    if action not in ("deactivate", "reactivate", "merge", "update_requester_emails", "add_secondary_emails"):
-        print("Invalid action. Please enter 'deactivate', 'reactivate', 'merge', 'update_requester_emails', or 'add_secondary_emails'.")
+    if action not in ("deactivate", "reactivate", "merge", "update_requester_emails", "add_secondary_emails", "update_external_id"):
+        print("Invalid action. Please enter 'deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', or 'update_external_id'.")
         exit(1)
 
     if action in ("deactivate", "reactivate"):
@@ -518,3 +580,18 @@ if __name__ == "__main__":
 
         # Perform the add secondary emails action.
         add_secondary_emails(add_secondary_emails_csv_file)
+
+    elif action == "update_external_id":
+        # Ask for the path to the CSV file or use the default 'update_requester_external_ids.csv'.
+        external_id_csv_path = input("Enter the path to the CSV file containing external IDs to update (default: update_requester_external_ids.csv): ").strip()
+        if not external_id_csv_path:
+            external_id_csv_path = "update_requester_external_ids.csv"
+        external_id_csv_file = Path(external_id_csv_path)
+
+        # Verify the file exists.
+        if not external_id_csv_file.exists():
+            print(f"Error: File {external_id_csv_file} does not exist.")
+            exit(1)
+
+        # Perform the external ID update action.
+        update_requester_external_id(external_id_csv_file)
