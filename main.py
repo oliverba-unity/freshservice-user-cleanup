@@ -39,7 +39,7 @@ def pace_requests():
     # Check if the request count in the last minute exceeds the limit.
     if len(REQUESTS_TIMES_QUEUE) >= MAX_REQUESTS_PER_MINUTE:
         wait_time = 60 - (current_time - REQUESTS_TIMES_QUEUE[0])  # Time until we're under the limit
-        print(f"Rate limit reached (500 requests per minute). Waiting for {wait_time} seconds...")
+        print(f"  Rate limit reached (500 requests per minute). Waiting for {wait_time} seconds...")
         time.sleep(wait_time)
 
     # Add the current request timestamp to the queue.
@@ -54,15 +54,15 @@ def handle_rate_limiting(response: requests.Response) -> None:
 
     # Warn and wait if rate limit remaining is low.
     if remaining_limit < 10:
-        print(f"Rate limit is low: {remaining_limit} remaining. Waiting for 30 seconds...")
+        print(f" Rate limit: remaining requests low: {remaining_limit}. Waiting for 30 seconds...")
         time.sleep(30)
     else:
-        print(f"Remaining rate limit requests: {remaining_limit}.")
+        print(f" Rate limit: {remaining_limit} requests remaining.")
 
     # Handle rate-limiting exceeded (HTTP 429).
     if response.status_code == 429:
         retry_after = int(response.headers.get("Retry-After", "30"))  # Default to 30 seconds if header is missing.
-        print(f"Rate limit exceeded. Waiting for {retry_after} seconds...")
+        print(f" Rate limit: exceeded. Waiting for {retry_after} seconds...")
         time.sleep(retry_after)
 
 def make_request_with_rate_limit(method: str, url: str, **kwargs) -> requests.Response:
@@ -503,11 +503,214 @@ def update_requester_external_id(file_path: Path) -> None:
     except Exception as e:
         print(f"An unexpected error occurred. Details: {e}")
 
+
+def replace_secondary_emails(file_path: Path) -> None:
+    """
+    Reads a CSV file containing requester IDs and secondary emails.
+    Clears existing secondary emails and replaces them with new ones.
+    API errors are written to a separate CSV file *as they occur*.
+    Successfully updated requester IDs and their new emails are logged to a separate CSV file.
+    Outputs a count of successful updates and errors at the end.
+
+    Args:
+        file_path (Path): Path to the CSV file containing requester IDs and secondary emails.
+    """
+    print(f"Reading data from CSV file: {file_path}")
+
+    error_log_file_path = file_path.with_name(f"{file_path.stem}_api_errors.csv")
+    success_log_file_path = file_path.with_name(f"{file_path.stem}_successfully_updated.csv")
+
+    error_csv_header = ["requester_id", "operation", "status_code", "response_text"]
+
+    # Define a maximum number of secondary email columns for the success CSV
+    MAX_SECONDARY_EMAIL_COLUMNS = 4
+    success_csv_header = ["requester_id"] + [f"secondary_email_{i+1}" for i in range(MAX_SECONDARY_EMAIL_COLUMNS)]
+
+    processed_successfully_count = 0
+    processed_with_errors_count = 0
+
+    try:
+        # Open the error log file
+        with open(error_log_file_path, mode='a+', newline='', encoding='utf-8') as error_file:
+            error_writer = csv.DictWriter(error_file, fieldnames=error_csv_header)
+            error_file.seek(0, os.SEEK_END)
+            if error_file.tell() == 0:
+                error_writer.writeheader()
+                print(f"Initialized error log file: {error_log_file_path}")
+
+            # Open the success log CSV file
+            with open(success_log_file_path, mode='a+', newline='', encoding='utf-8') as success_csv_file:
+                success_writer = csv.DictWriter(success_csv_file, fieldnames=success_csv_header)
+                success_csv_file.seek(0, os.SEEK_END)
+                if success_csv_file.tell() == 0:
+                    success_writer.writeheader()
+                    print(f"Initialized error log file: {success_log_file_path}")
+
+                try:
+                    # Open the input CSV file
+                    with file_path.open(mode='r', encoding='utf-8', newline='') as csvfile:
+                        csv_reader = csv.reader(csvfile)
+
+                        try:
+                            header = next(csv_reader)
+                        except StopIteration:
+                            message = f"Error: Input CSV file {file_path} is empty or has no header."
+                            print(message)
+                            error_writer.writerow({
+                                "requester_id": "N/A", "operation": "check_input_csv_file",
+                                "status_code": "N/A", "response_text": message
+                            })
+                            error_file.flush()
+                            return
+
+                        if len(header) < 1 or header[0].lower() != "requester_id":
+                            message = "Invalid input CSV format. Must have 'requester_id' as the first column."
+                            print(message)
+                            error_writer.writerow({
+                                "requester_id": "N/A", "operation": "check_input_csv_headers",
+                                "status_code": "N/A", "response_text": message
+                            })
+                            error_file.flush()
+                            return
+
+                        for row_number, row in enumerate(csv_reader, start=2):
+                            is_row_error = False  # Flag to track if current row had an error
+                            if not row or not row[0].strip():
+                                message = f"Skipping row {row_number}: requester_id is missing or empty."
+                                print(message)
+                                error_writer.writerow({
+                                    "requester_id": f"Row {row_number}", "operation": "check_data_row_exists",
+                                    "status_code": "N/A", "response_text": message
+                                })
+                                error_file.flush()
+                                is_row_error = True
+
+                            if is_row_error:
+                                processed_with_errors_count += 1
+                                continue  # Move to next row
+
+                            requester_id_str = row[0].strip()
+                            current_requester_id_for_error_logging = requester_id_str
+
+                            try:
+                                requester_id = int(requester_id_str)
+                                current_requester_id_for_error_logging = requester_id
+
+                                secondary_emails = [email.strip() for email in row[1:] if email and email.strip()]
+
+                                # Step 1: Clear all existing secondary emails
+                                print(f"{requester_id}: Clearing existing secondary emails.")
+                                clear_secondary_emails_body = {"secondary_emails": []}
+
+                                response1 = make_request_with_rate_limit(
+                                    "PUT", f"{API_URL}/requesters/{requester_id}",
+                                    json=clear_secondary_emails_body,
+                                    headers={"Content-Type": "application/json"}, auth=auth
+                                )
+
+                                if response1.status_code != 200:
+                                    error_details = {
+                                        "requester_id": requester_id, "operation": "clear_secondary_emails",
+                                        "status_code": response1.status_code, "response_text": response1.text
+                                    }
+                                    error_writer.writerow(error_details)
+                                    error_file.flush()
+                                    print(
+                                        f"{requester_id}: Failed to clear secondary emails. HTTP {response1.status_code}. Response: {response1.text}")
+                                    is_row_error = True
+
+                                # Step 2: Replace with new secondary emails (only if step 1 was successful)
+                                if not is_row_error:
+                                    print(f"{requester_id}: Setting secondary emails to: {secondary_emails}")
+                                    update_secondary_emails_body = {"secondary_emails": secondary_emails}
+
+                                    response2 = make_request_with_rate_limit(
+                                        "PUT", f"{API_URL}/requesters/{requester_id}",
+                                        json=update_secondary_emails_body,
+                                        headers={"Content-Type": "application/json"}, auth=auth
+                                    )
+
+                                    if response2.status_code == 200:
+                                        print(f"{requester_id}: Successfully set secondary emails.")
+                                        # Prepare data for success CSV with individual email columns
+                                        success_data_row = {"requester_id": requester_id}
+                                        for i in range(MAX_SECONDARY_EMAIL_COLUMNS):
+                                            col_name = f"secondary_email_{i + 1}"
+                                            if i < len(secondary_emails):
+                                                success_data_row[col_name] = secondary_emails[i]
+                                            else:
+                                                success_data_row[col_name] = ""  # Empty string for unused columns
+
+                                        success_writer.writerow(success_data_row)
+                                        success_csv_file.flush()
+                                        processed_successfully_count += 1
+                                    else:
+                                        error_details = {
+                                            "requester_id": requester_id, "operation": "set_secondary_emails",
+                                            "status_code": response2.status_code, "response_text": response2.text
+                                        }
+                                        error_writer.writerow(error_details)
+                                        error_file.flush()
+                                        print(
+                                            f"{requester_id}: Failed to set secondary emails. HTTP {response2.status_code}. Response: {response2.text}")
+                                        is_row_error = True
+
+                            except ValueError:
+                                message = f"Invalid requester ID format '{requester_id_str}' in input CSV row {row_number}. Skipping..."
+                                print(message)
+                                error_writer.writerow({
+                                    "requester_id": requester_id_str, "operation": "check_requester_id_format",
+                                    "status_code": "N/A", "response_text": message
+                                })
+                                error_file.flush()
+                                is_row_error = True
+                            except Exception as e:
+                                message = (f"An unexpected error occurred while processing row {row_number} "
+                                           f"(Requester ID: {current_requester_id_for_error_logging}). Details: {e}")
+                                print(message)
+                                error_writer.writerow({
+                                    "requester_id": current_requester_id_for_error_logging,
+                                    "operation": "catch_row_exception", "status_code": "N/A", "response_text": str(e)
+                                })
+                                error_file.flush()
+                                is_row_error = True
+
+                            if is_row_error:
+                                processed_with_errors_count += 1
+
+                except FileNotFoundError:
+                    message = f"Error: Input CSV file {file_path} not found."
+                    print(message)
+                    # This error is critical and prevents processing, so log it to error file if possible.
+                    # No individual rows are processed, so counters remain 0 or reflect prior state.
+                    error_writer.writerow({
+                        "requester_id": "N/A", "operation": "check_csv_exists",
+                        "status_code": "N/A", "response_text": message
+                    })
+                    error_file.flush()
+                except Exception as e:  # Catch-all for other major issues with input CSV processing
+                    message = f"An unexpected major error occurred while processing input CSV {file_path}. Details: {e}"
+                    print(message)
+                    error_writer.writerow({
+                        "requester_id": "N/A", "operation": "catch_csv_errors",
+                        "status_code": "N/A", "response_text": message
+                    })
+                    error_file.flush()
+
+            print(f"Successfully updated requesters: {processed_successfully_count} (details in {success_log_file_path})")
+            print(f"Requesters/Rows with errors: {processed_with_errors_count} (details in {error_log_file_path})")
+
+    except IOError as e_io:
+        print(
+            f"CRITICAL: Could not open or write to log files ({error_log_file_path}, {success_log_file_path}). Details: {e_io}")
+    except Exception as e_global:
+        print(f"CRITICAL: An unexpected global error occurred. Details: {e_global}")
+
 if __name__ == "__main__":
     # Ask the user which action they want to perform.
-    action = input("Enter action ('deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', or 'update_external_id'): ").strip().lower()
+    action = input("Enter action ('deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', 'replace_secondary_emails', or 'update_external_id'): ").strip().lower()
 
-    if action not in ("deactivate", "reactivate", "merge", "update_requester_emails", "add_secondary_emails", "update_external_id"):
+    if action not in ("deactivate", "reactivate", "merge", "update_requester_emails", "add_secondary_emails", "update_external_id", "replace_secondary_emails"):
         print("Invalid action. Please enter 'deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', or 'update_external_id'.")
         exit(1)
 
@@ -595,3 +798,19 @@ if __name__ == "__main__":
 
         # Perform the external ID update action.
         update_requester_external_id(external_id_csv_file)
+
+    elif action == "replace_secondary_emails":
+        # Ask for the path to the CSV file or use the default 'replace_secondary_emails.csv'.
+        replace_emails_csv_path = input(
+            "Enter the path to the CSV file containing secondary emails to replace (default: replace_secondary_emails.csv): ").strip()
+        if not replace_emails_csv_path:
+            replace_emails_csv_path = "replace_secondary_emails.csv"
+        replace_emails_csv_file = Path(replace_emails_csv_path)
+
+        # Verify the file exists.
+        if not replace_emails_csv_file.exists():
+            print(f"Error: File {replace_emails_csv_file} does not exist.")
+            exit(1)
+
+        # Perform the replace secondary emails action.
+        replace_secondary_emails(replace_emails_csv_file)
