@@ -706,12 +706,64 @@ def replace_secondary_emails(file_path: Path) -> None:
     except Exception as e_global:
         print(f"CRITICAL: An unexpected global error occurred. Details: {e_global}")
 
+def clear_address_and_phone(file_path: Path = Path("requester_ids.txt")) -> None:
+    """
+    Clears the address and phone fields (work_phone_number, address, mobile_phone_number) for multiple requesters.
+
+    Args:
+        file_path (Path): Path to the text file containing requester IDs. Defaults to "requester_ids.txt".
+    """
+    print(f"Reading requester IDs from file: {file_path}")
+
+    try:
+        # Load requester IDs from the file
+        requester_ids = load_requester_ids(file_path)
+
+        if not requester_ids:
+            print("No valid requester IDs found in the file. Exiting...")
+            return
+
+        for requester_id in requester_ids:
+            try:
+                print(f"Clearing address and phone fields for requester {requester_id}...")
+
+                # Create the request body
+                clear_fields_body = {
+                    "work_phone_number": None,
+                    "address": None,
+                    "mobile_phone_number": None
+                }
+
+                # Make the API request
+                response = make_request_with_rate_limit(
+                    "PUT",
+                    f"{API_URL}/requesters/{requester_id}",
+                    json=clear_fields_body,
+                    headers={"Content-Type": "application/json"},
+                    auth=auth
+                )
+
+                if response.status_code == 200:
+                    print(f"Successfully cleared address and phone fields for requester {requester_id}.")
+                elif response.status_code == 404:
+                    print(f"Requester {requester_id} not found. Skipping...")
+                else:
+                    print(f"Failed to clear address and phone fields for requester {requester_id}. HTTP Status: {response.status_code}, Response: {response.text}")
+
+            except Exception as e:
+                print(f"An error occurred while processing requester {requester_id}. Details: {e}")
+
+    except FileNotFoundError:
+        print(f"Error: File {file_path} not found.")
+    except Exception as e:
+        print(f"An unexpected error occurred. Details: {e}")
+
 if __name__ == "__main__":
     # Ask the user which action they want to perform.
-    action = input("Enter action ('deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', 'replace_secondary_emails', or 'update_external_id'): ").strip().lower()
+    action = input("Enter action ('deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', 'replace_secondary_emails', or 'clear_address_and_phone'): ").strip().lower()
 
-    if action not in ("deactivate", "reactivate", "merge", "update_requester_emails", "add_secondary_emails", "update_external_id", "replace_secondary_emails"):
-        print("Invalid action. Please enter 'deactivate', 'reactivate', 'merge', 'update_requester_emails', 'add_secondary_emails', or 'update_external_id'.")
+    if action not in ("deactivate", "reactivate", "merge", "update_requester_emails", "add_secondary_emails", "replace_secondary_emails", "clear_address_and_phone"):
+        print("Invalid action")
         exit(1)
 
     if action in ("deactivate", "reactivate"):
@@ -814,3 +866,18 @@ if __name__ == "__main__":
 
         # Perform the replace secondary emails action.
         replace_secondary_emails(replace_emails_csv_file)
+
+    elif action == "clear_address_and_phone":
+        # Ask for the path to the requester IDs file or use the default 'requester_ids.txt'.
+        requester_ids_path = input("Enter the path to the requester IDs file (default: requester_ids.txt): ").strip()
+        if not requester_ids_path:
+            requester_ids_path = "requester_ids.txt"
+        requester_ids_file = Path(requester_ids_path)
+
+        # Verify the file exists.
+        if not requester_ids_file.exists():
+            print(f"Error: File {requester_ids_file} does not exist.")
+            exit(1)
+
+        # Perform the clear address and phone action.
+        clear_address_and_phone(requester_ids_file)
